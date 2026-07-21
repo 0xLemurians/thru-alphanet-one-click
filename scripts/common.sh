@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+umask 077
 
 readonly THRU_VERSION="0.2.38"
 readonly NVM_VERSION="0.40.3"
@@ -40,8 +41,10 @@ require_root() {
 
 require_supported_host() {
   [[ -r /etc/os-release ]] || die "/etc/os-release bulunamadı."
+
   # shellcheck disable=SC1091
   source /etc/os-release
+
   [[ ${ID:-} == "ubuntu" ]] || die "Yalnızca Ubuntu destekleniyor. Algılanan: ${ID:-bilinmiyor}"
   [[ ${VERSION_ID:-} == "24.04" ]] || die "Ubuntu 24.04 gerekli. Algılanan: ${VERSION_ID:-bilinmiyor}"
   [[ $(uname -m) == "x86_64" ]] || die "x86_64 gerekli. Algılanan: $(uname -m)"
@@ -53,14 +56,27 @@ require_supported_host() {
 
 load_nvm() {
   export NVM_DIR="${HOME}/.nvm"
+
   # shellcheck disable=SC1090
   [[ -s "${NVM_DIR}/nvm.sh" ]] && source "${NVM_DIR}/nvm.sh"
 }
 
 ensure_config_value() {
-  local key=$1 value=$2
-  mkdir -p "$(dirname "$CONFIG_FILE")"
-  touch "$CONFIG_FILE"
+  local key=$1
+  local value=$2
+  local config_dir
+
+  config_dir=$(dirname "$CONFIG_FILE")
+
+  mkdir -p "$config_dir"
+  chmod 700 "$THRU_HOME" "$config_dir"
+
+  if [[ ! -e "$CONFIG_FILE" ]]; then
+    install -m 600 /dev/null "$CONFIG_FILE"
+  else
+    chmod 600 "$CONFIG_FILE"
+  fi
+
   if grep -q "^${key}:" "$CONFIG_FILE"; then
     sed -i "s|^${key}:.*|${key}: ${value}|" "$CONFIG_FILE"
   else
