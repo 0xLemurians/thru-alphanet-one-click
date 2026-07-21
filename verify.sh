@@ -7,18 +7,29 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -
 # shellcheck source=scripts/common.sh
 source "${SCRIPT_DIR}/scripts/common.sh"
 
+extract_json() {
+  sed -n '/^[[:space:]]*[{[]/,$p'
+}
+
 require_root
 load_nvm
+
 export PATH="${TOOLCHAIN_DIR}/bin:${PATH}"
 
-[[ -r /etc/os-release ]] || die "/etc/os-release bulunamadı."
+[[ -r /etc/os-release ]] ||
+  die "/etc/os-release bulunamadı."
 
 # shellcheck disable=SC1091
 source /etc/os-release
 
-[[ ${ID:-} == "ubuntu" ]] || die "Yalnızca Ubuntu destekleniyor."
-[[ ${VERSION_ID:-} == "24.04" ]] || die "Ubuntu 24.04 gerekli."
-[[ $(uname -m) == "x86_64" ]] || die "x86_64 mimarisi gerekli."
+[[ ${ID:-} == "ubuntu" ]] ||
+  die "Yalnızca Ubuntu destekleniyor."
+
+[[ ${VERSION_ID:-} == "24.04" ]] ||
+  die "Ubuntu 24.04 gerekli."
+
+[[ $(uname -m) == "x86_64" ]] ||
+  die "x86_64 mimarisi gerekli."
 
 echo "=== SİSTEM ==="
 printf '%s\n' "$PRETTY_NAME"
@@ -34,7 +45,7 @@ for command_name in node npm thru jq; do
 done
 
 declare -F nvm >/dev/null 2>&1 ||
-  die "nvm bulunamadı."
+  die "NVM bulunamadı."
 
 compiler="${TOOLCHAIN_DIR}/bin/riscv64-unknown-elf-gcc"
 
@@ -53,8 +64,8 @@ printf 'npm: %s\n' "$npm_version"
 printf 'Thru: %s\n' "$thru_version"
 printf 'Toolchain: %s\n' "$toolchain_version"
 
-if [[ "$nvm_version" != "$NVM_VERSION" ]]; then
-  die "Beklenen NVM sürümü ${NVM_VERSION}, bulunan ${nvm_version}."
+if [[ "$nvm_version" != "$NVM_INSTALLER_VERSION" ]]; then
+  die "Beklenen NVM sürümü ${NVM_INSTALLER_VERSION}, bulunan ${nvm_version}."
 fi
 
 case "$node_version" in
@@ -92,18 +103,40 @@ done
 echo
 echo "=== AĞ ==="
 
-version_json="$(thru --json getversion)"
-printf '%s\n' "$version_json" | jq .
+version_output="$(thru --json getversion 2>&1)" || {
+  printf '%s\n' "$version_output" >&2
+  die "AlphaNet bağlantı komutu başarısız oldu."
+}
 
-if ! printf '%s\n' "$version_json" | json_has_success; then
+version_json="$(printf '%s\n' "$version_output" | extract_json)"
+
+[[ -n "$version_json" ]] || {
+  printf '%s\n' "$version_output" >&2
+  die "AlphaNet çıktısında JSON bulunamadı."
+}
+
+printf '%s\n' "$version_json" | jq . ||
+  die "AlphaNet çıktısı geçerli JSON değil."
+
+printf '%s\n' "$version_json" | json_has_success ||
   die "AlphaNet bağlantısı doğrulanamadı."
-fi
+
+ok "AlphaNet bağlantısı doğrulandı"
 
 echo
 echo "=== HESAP ==="
 
-if balance_json="$(thru --json getbalance default 2>/dev/null)"; then
-  printf '%s\n' "$balance_json" | jq .
+if balance_output="$(thru --json getbalance default 2>&1)"; then
+  balance_json="$(printf '%s\n' "$balance_output" | extract_json)"
+
+  if [[ -n "$balance_json" ]] &&
+    printf '%s\n' "$balance_json" | jq -e . >/dev/null 2>&1; then
+
+    printf '%s\n' "$balance_json" | jq .
+  else
+    printf '%s\n' "$balance_output"
+  fi
+
   ok "Default hesap ve bakiye kontrol edildi"
 else
   warn "Default hesap bulunamadı veya bakiye okunamadı."
@@ -119,8 +152,20 @@ if [[ -f "${THRU_HOME}/last-upload-seed" ]]; then
   echo
   printf '=== SON YÜKLEME: %s ===\n' "$seed"
 
-  status_json="$(thru --json uploader status "$seed")"
-  printf '%s\n' "$status_json" | jq .
+  status_output="$(thru --json uploader status "$seed" 2>&1)" || {
+    printf '%s\n' "$status_output" >&2
+    die "Uploader durumu alınamadı."
+  }
+
+  status_json="$(printf '%s\n' "$status_output" | extract_json)"
+
+  [[ -n "$status_json" ]] || {
+    printf '%s\n' "$status_output" >&2
+    die "Uploader çıktısında JSON bulunamadı."
+  }
+
+  printf '%s\n' "$status_json" | jq . ||
+    die "Uploader çıktısı geçerli JSON değil."
 
   if ! printf '%s\n' "$status_json" |
     jq -e '
@@ -128,8 +173,11 @@ if [[ -f "${THRU_HOME}/last-upload-seed" ]]; then
       .uploader_status.summary.upload_exists == true and
       .uploader_status.summary.corrupted_accounts.any == false
     ' >/dev/null; then
+
     die "Son program yüklemesi doğrulanamadı."
   fi
+
+  ok "Son program yüklemesi doğrulandı"
 else
   warn "Henüz program upload kaydı bulunmuyor."
   warn "--full kurulumu yapılmadıysa bu normaldir."
