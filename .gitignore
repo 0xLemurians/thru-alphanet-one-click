@@ -1,0 +1,21 @@
+# Secrets and local Thru state
+.thru/
+config.yaml
+*.key
+*.pem
+.env
+.env.*
+
+# Build output and logs
+build/
+*.log
+*.tmp
+
+# Generated projects
+thru-projects/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
