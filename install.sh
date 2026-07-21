@@ -1,15 +1,23 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+umask 077
+
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+
 # shellcheck source=scripts/common.sh
 source "${SCRIPT_DIR}/scripts/common.sh"
 
 FULL=false
 ASSUME_YES=false
+
 for arg in "$@"; do
   case "$arg" in
-    --full) FULL=true ;;
-    --yes|-y) ASSUME_YES=true ;;
+    --full)
+      FULL=true
+      ;;
+    --yes|-y)
+      ASSUME_YES=true
+      ;;
     --help|-h)
       cat <<'HELP'
 Kullanım:
@@ -19,13 +27,22 @@ Kullanım:
 HELP
       exit 0
       ;;
-    *) die "Bilinmeyen seçenek: $arg" ;;
+    *)
+      die "Bilinmeyen seçenek: $arg"
+      ;;
   esac
 done
 
 require_root
 require_supported_host
+
 LOG_FILE="/root/thru-one-click-$(date +%Y%m%d-%H%M%S).log"
+export LOG_FILE
+
+# Log dosyasını yalnızca root okuyup yazabilsin.
+install -m 600 /dev/null "$LOG_FILE"
+
+# Bundan sonraki bütün çıktıları hem ekranda hem güvenli log dosyasında göster.
 exec > >(tee -a "$LOG_FILE") 2>&1
 
 cat <<'BANNER'
@@ -58,5 +75,6 @@ fi
 
 log "Son doğrulama"
 bash "${SCRIPT_DIR}/verify.sh"
+
 ok "Kurulum tamamlandı"
 printf 'Log: %s\n' "$LOG_FILE"
