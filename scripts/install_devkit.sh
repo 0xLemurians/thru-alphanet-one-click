@@ -10,8 +10,7 @@ source "${SCRIPT_DIR}/common.sh"
 require_root
 require_supported_host
 
-log
- "RISC-V toolchain v${THRU_VERSION} indiriliyor"
+log "RISC-V toolchain v${THRU_VERSION} indiriliyor"
 
 rm -rf "$TOOLCHAIN_DIR"
 rm -f "$TOOLCHAIN_ARCHIVE"
@@ -28,6 +27,8 @@ curl \
   "$TOOLCHAIN_URL" \
   --output "$TOOLCHAIN_ARCHIVE"
 
+log "Toolchain SHA-256 değeri doğrulanıyor"
+
 printf '%s  %s\n' \
   "$TOOLCHAIN_SHA256" \
   "$TOOLCHAIN_ARCHIVE" |
@@ -40,11 +41,12 @@ tar \
   --strip-components=1 \
   --directory "$TOOLCHAIN_DIR"
 
-toolchain_version="$(
-  "${TOOLCHAIN_DIR}/bin/riscv64-unknown-elf-gcc" --version |
-    sed -n '1p'
-)"
+compiler="${TOOLCHAIN_DIR}/bin/riscv64-unknown-elf-gcc"
 
+[[ -x "$compiler" ]] ||
+  die "Toolchain derleyicisi bulunamadı."
+
+toolchain_version="$("$compiler" --version | sed -n '1p')"
 printf '%s\n' "$toolchain_version"
 
 ensure_config_value "toolchain_path" "$TOOLCHAIN_DIR"
@@ -52,11 +54,15 @@ ensure_config_value "toolchain_version" "$THRU_VERSION"
 
 log "C SDK v${THRU_VERSION} indiriliyor"
 
-rm -rf "$C_SDK_DIR" /tmp/thru-c-sdk-src
+rm -rf "$C_SDK_DIR"
+rm -rf /tmp/thru-c-sdk-src
 rm -f "$C_SDK_ARCHIVE"
 
-mkdir -p "$C_SDK_DIR" /tmp/thru-c-sdk-src
-chmod 700 "$C_SDK_DIR" /tmp/thru-c-sdk-src
+mkdir -p "$C_SDK_DIR"
+mkdir -p /tmp/thru-c-sdk-src
+
+chmod 700 "$C_SDK_DIR"
+chmod 700 /tmp/thru-c-sdk-src
 
 curl \
   --fail \
@@ -66,6 +72,8 @@ curl \
   --show-error \
   "$C_SDK_URL" \
   --output "$C_SDK_ARCHIVE"
+
+log "C SDK SHA-256 değeri doğrulanıyor"
 
 printf '%s  %s\n' \
   "$C_SDK_SHA256" \
@@ -81,20 +89,16 @@ tar \
 
 cp -a /tmp/thru-c-sdk-src/. "$C_SDK_DIR/"
 
-# İndirilmiş kaynakların zaman damgalarını günceller.
 find "$C_SDK_DIR" -type f -exec touch {} +
 
 export PATH="${TOOLCHAIN_DIR}/bin:${PATH}"
 
 touch "${HOME}/.bashrc"
 
-if ! grep -qxF \
-  'export PATH="$HOME/.thru/sdk/toolchain/bin:$PATH"' \
-  "${HOME}/.bashrc"; then
+toolchain_path_line='export PATH="$HOME/.thru/sdk/toolchain/bin:$PATH"'
 
-  printf '%s\n' \
-    'export PATH="$HOME/.thru/sdk/toolchain/bin:$PATH"' \
-    >> "${HOME}/.bashrc"
+if ! grep -qxF "$toolchain_path_line" "${HOME}/.bashrc"; then
+  printf '%s\n' "$toolchain_path_line" >> "${HOME}/.bashrc"
 fi
 
 log "C SDK kütüphanesi hazırlanıyor"
@@ -105,16 +109,17 @@ make \
   BUILDDIR="thru-sdk" \
   all lib include
 
-[[ -x "${TOOLCHAIN_DIR}/bin/riscv64-unknown-elf-gcc" ]] ||
-  die "Toolchain derleyicisi bulunamadı."
+sdk_header="${C_SDK_DIR}/thru-sdk/include/thru-sdk/c/tn_sdk.h"
+sdk_library="${C_SDK_DIR}/thru-sdk/lib/libtn_sdk.a"
+sdk_makefile="${C_SDK_DIR}/thru-sdk/thru_c_program.mk"
 
-[[ -f "${C_SDK_DIR}/thru-sdk/include/thru-sdk/c/tn_sdk.h" ]] ||
+[[ -f "$sdk_header" ]] ||
   die "tn_sdk.h bulunamadı."
 
-[[ -f "${C_SDK_DIR}/thru-sdk/lib/libtn_sdk.a" ]] ||
+[[ -f "$sdk_library" ]] ||
   die "libtn_sdk.a bulunamadı."
 
-[[ -f "${C_SDK_DIR}/thru-sdk/thru_c_program.mk" ]] ||
+[[ -f "$sdk_makefile" ]] ||
   die "thru_c_program.mk bulunamadı."
 
 [[ -f "$CONFIG_FILE" ]] ||
