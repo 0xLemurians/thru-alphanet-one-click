@@ -8,25 +8,42 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -
 source "${SCRIPT_DIR}/common.sh"
 
 readonly NODE_VERSION="24.18.0"
+readonly NVM_INSTALL_SHA256="2d8359a64a3cb07c02389ad88ceecd43f2fa469c06104f92f98df5b6f315275f"
 readonly NVM_INSTALL_SCRIPT="/tmp/nvm-install-${NVM_INSTALLER_VERSION}.sh"
+
+require_root
+require_supported_host
 
 log "NVM ${NVM_INSTALLER_VERSION} ve Node.js ${NODE_VERSION} kuruluyor"
 
 export NVM_DIR="${HOME}/.nvm"
+
 mkdir -p "$NVM_DIR"
 chmod 700 "$NVM_DIR"
 
 if [[ ! -s "${NVM_DIR}/nvm.sh" ]]; then
+  rm -f "$NVM_INSTALL_SCRIPT"
+
   curl \
     --fail \
     --silent \
     --show-error \
     --location \
+    --retry 5 \
+    --retry-delay 5 \
     "https://raw.githubusercontent.com/nvm-sh/nvm/v${NVM_INSTALLER_VERSION}/install.sh" \
     --output "$NVM_INSTALL_SCRIPT"
 
+  log "NVM kurulum dosyasının SHA-256 değeri doğrulanıyor"
+
+  printf '%s  %s\n' \
+    "$NVM_INSTALL_SHA256" \
+    "$NVM_INSTALL_SCRIPT" |
+    sha256sum --check -
+
   chmod 700 "$NVM_INSTALL_SCRIPT"
   bash "$NVM_INSTALL_SCRIPT"
+
   rm -f "$NVM_INSTALL_SCRIPT"
 fi
 
@@ -34,6 +51,13 @@ load_nvm
 
 declare -F nvm >/dev/null 2>&1 ||
   die "NVM yüklenemedi."
+
+installed_nvm_version="$(nvm --version)"
+
+[[ "$installed_nvm_version" == "$NVM_INSTALLER_VERSION" ]] ||
+  die "Beklenen NVM sürümü ${NVM_INSTALLER_VERSION}, bulunan ${installed_nvm_version}."
+
+ok "NVM ${installed_nvm_version} hazır"
 
 nvm install "$NODE_VERSION"
 nvm alias default "$NODE_VERSION"
