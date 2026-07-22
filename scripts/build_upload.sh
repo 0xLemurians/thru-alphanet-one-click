@@ -7,10 +7,12 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -
 # shellcheck source=common.sh
 source "${SCRIPT_DIR}/common.sh"
 
-readonly MAX_STATUS_RETRIES=10
-readonly STATUS_RETRY_DELAY=15
+readonly MAX_UPLOAD_ATTEMPTS=10
+readonly MAX_STATUS_CHECKS=10
+readonly NOT_UPLOdirname -- "${BASH_SOURCE[0]}ADED_CONFIRMATIONS=3
+readonly RETRY_DELAY=15
 
-FINAL_STATUS_JSON=""
+LAST_STATUS_STATE="unknown"
 
 extract_json() {
   sed -n '/^[[:space:]]*[{[]/,$p'
@@ -31,53 +33,97 @@ print_output() {
   fi
 }
 
-verify_upload_with_retry() {
+query_upload_status() {
   local seed=$1
-  local attempt
   local status_output
   local status_json
-  local current_status
+  local corrupted
 
-  FINAL_STATUS_JSON=""
+  LAST_STATUS_STATE="unknown"
 
-  for ((attempt = 1; attempt <= MAX_STATUS_RETRIES; attempt++)); do
-    if status_output="$(thru --json uploader status "$seed" 2>&1)"; then
-      status_json="$(printf '%s\n' "$status_output" | extract_json)"
+  if ! status_output="$(thru --json uploader status "$seed" 2>&1)"; then
+    LAST_STATUS_STATE="unavailable"
+    warn "Uploader durum sorgusu başarısız oldu."
+    print_output "$status_output" >&2
+    return 1
+  fi
 
-      if [[ -n "$status_json" ]] &&
-        printf '%s\n' "$status_json" | jq -e . >/dev/null 2>&1; then
+  status_json="$(printf '%s\n' "$status_output" | extract_json)"
 
-        FINAL_STATUS_JSON="$status_json"
+  if [[ -z "$status_json" ]] ||
+    ! printf '%s\n' "$status_json" | jq -e . >/dev/null 2>&1; then
 
-        if printf '%s\n' "$status_json" |
-          jq -e '
-            .uploader_status.summary.status == "uploaded" and
-            .uploader_status.summary.upload_exists == true and
-            .uploader_status.summary.corrupted_accounts.any == false
-          ' >/dev/null; then
+    LAST_STATUS_STATE="invalid"
+    warn "Uploader durum çıktısı geçerli JSON değil."
+    printf '%s\n' "$status_output" >&2
+    return 1
+  fi
 
-          printf '%s\n' "$status_json" | jq .
-          return 0
-        fi
+  LAST_STATUS_STATE="$(
+    printf '%s\n' "$status_json" |
+      jq -r '.uploader_status.summary.status // "unknown"'
+  )"
 
-        current_status="$(
-          printf '%s\n' "$status_json" |
-            jq -r '.uploader_status.summary.status // "bilinmiyor"'
-        )"
+  corrupted="$(
+    printf '%s\n' "$status_json" |
+      jq -r '.uploader_status.summary.corrupted_accounts.any // false'
+  )"
 
-        warn "Yükleme henüz doğrulanmadı. Durum: ${current_status}"
-      else
-        warn "Uploader durum çıktısı geçerli JSON değildi."
-        printf '%s\n' "$status_output" >&2
-      fi
-    else
-      warn "Uploader durum sorgusu başarısız (${attempt}/${MAX_STATUS_RETRIES})."
-      print_output "$status_output" >&2
+  if [[ "$corrupted" == "true" ]]; then
+    printf '%s\n' "$status_json" | jq .
+    die "Uploader hesaplarında bozulma tespit edildi."
+  fi
+
+  if printf '%s\n' "$status_json" |
+    jq -e '
+      .uploader_status.summary.status == "uploaded" and
+      .uploader_status.summary.upload_exists == true and
+      .uploader_status.summary.corrupted_accounts.any == false
+    ' >/dev/null; then
+
+    printf '%s\n' "$status_json" | jq .
+    return 0
+  fi
+
+  return 1
+}
+
+wait_for_upload() {
+  local seed=$1
+  local check
+  local not_uploaded_count=0
+
+  for ((check = 1; check <= MAX_STATUS_CHECKS; check++)); do
+    if query_upload_status "$seed"; then
+      return 0
     fi
 
-    if ((attempt < MAX_STATUS_RETRIES)); then
-      warn "${STATUS_RETRY_DELAY} saniye sonra tekrar kontrol edilecek..."
-      sleep "$STATUS_RETRY_DELAY"
+    case "$LAST_STATUS_STATE" in
+      partial)
+        warn "Yükleme devam ediyor (${check}/${MAX_STATUS_CHECKS})."
+        ;;
+
+      not_uploaded)
+        ((not_uploaded_count += 1))
+        warn "Program henüz yüklenmemiş (${check}/${MAX_STATUS_CHECKS})."
+
+        if ((not_uploaded_count >= NOT_UPLOADED_CONFIRMATIONS)); then
+          return 2
+        fi
+        ;;
+
+      unavailable|invalid|unknown)
+        warn "Yükleme durumu alınamadı (${check}/${MAX_STATUS_CHECKS})."
+        ;;
+
+      *)
+        warn "Beklenmeyen yükleme durumu: ${LAST_STATUS_STATE}"
+        ;;
+    esac
+
+    if ((check < MAX_STATUS_CHECKS)); then
+      warn "${RETRY_DELAY} saniye sonra tekrar kontrol edilecek..."
+      sleep "$RETRY_DELAY"
     fi
   done
 
@@ -85,6 +131,7 @@ verify_upload_with_retry() {
 }
 
 require_root
+require_supported_host
 load_nvm
 
 export PATH="${TOOLCHAIN_DIR}/bin:${PATH}"
@@ -105,7 +152,6 @@ mkdir -p "$PROJECTS_DIR"
 chmod 700 "$PROJECTS_DIR"
 
 cd "$PROJECTS_DIR"
-
 thru dev init c "$PROJECT_NAME" --path "$PROJECTS_DIR"
 
 log "Örnek program derleniyor"
@@ -121,7 +167,7 @@ make -j"$(nproc)"
 ls -lh "$BINARY_REL"
 sha256sum "$BINARY_REL"
 
-log "Benzersiz seed ile AlphaNet'e yükleniyor"
+log "Benzersiz seed hazırlanıyor"
 
 seed="thru_demo_$(date +%s)_$(openssl rand -hex 3)"
 
@@ -131,36 +177,59 @@ chmod 700 "$THRU_HOME"
 install -m 600 /dev/null "${THRU_HOME}/last-upload-seed"
 printf '%s\n' "$seed" > "${THRU_HOME}/last-upload-seed"
 
-upload_command_succeeded=false
+upload_verified=false
 
-if upload_output="$(
-  thru --json uploader upload "$seed" "$BINARY_REL" 2>&1
-)"; then
-  upload_command_succeeded=true
-  print_output "$upload_output"
-else
-  warn "Upload komutu hata verdi."
-  warn "İşlem zincire ulaşmış olabileceği için seed durumu kontrol edilecek."
-  print_output "$upload_output" >&2
-fi
+for ((attempt = 1; attempt <= MAX_UPLOAD_ATTEMPTS; attempt++)); do
+  log "AlphaNet upload denemesi ${attempt}/${MAX_UPLOAD_ATTEMPTS}"
 
-if $upload_command_succeeded; then
-  upload_json="$(printf '%s\n' "$upload_output" | extract_json)"
+  if upload_output="$(
+    thru --json uploader upload "$seed" "$BINARY_REL" 2>&1
+  )"; then
 
-  if [[ -n "$upload_json" ]] &&
-    printf '%s\n' "$upload_json" | json_has_success; then
+    print_output "$upload_output"
 
-    ok "Upload işlemi ağa gönderildi"
+    upload_json="$(printf '%s\n' "$upload_output" | extract_json)"
+
+    if [[ -n "$upload_json" ]] &&
+      printf '%s\n' "$upload_json" | json_has_success; then
+
+      ok "Upload komutu başarıyla tamamlandı"
+    else
+      warn "Upload komutu tamamlandı fakat JSON başarı alanı bulunamadı."
+    fi
   else
-    warn "Upload çıktısında başarı durumu bulunamadı; durum sorgulanacak."
+    warn "Upload komutu başarısız oldu."
+    warn "İstek zincire ulaşmış olabileceği için aynı seed kontrol edilecek."
+    print_output "$upload_output" >&2
   fi
-fi
 
-log "Program yükleme durumu doğrulanıyor"
+  log "Program yükleme durumu doğrulanıyor"
 
-if ! verify_upload_with_retry "$seed"; then
-  die "Program yüklemesi ${MAX_STATUS_RETRIES} denemede doğrulanamadı."
-fi
+  if wait_for_upload "$seed"; then
+    upload_verified=true
+    break
+  else
+    wait_result=$?
+  fi
+
+  if [[ "$LAST_STATUS_STATE" == "partial" ]]; then
+    die "Yükleme kısmi durumda kaldı. Aynı seed ile tekrar upload yapılmadı: ${seed}"
+  fi
+
+  if ((attempt < MAX_UPLOAD_ATTEMPTS)); then
+    if ((wait_result == 2)); then
+      warn "Program yüklenmemiş görünüyor; aynı seed ile yeniden gönderilecek."
+    else
+      warn "RPC durumu kesinleştirilemedi; aynı seed ile yeniden denenecek."
+    fi
+
+    warn "${RETRY_DELAY} saniye sonra tekrar denenecek..."
+    sleep "$RETRY_DELAY"
+  fi
+done
+
+$upload_verified ||
+  die "Program yüklemesi ${MAX_UPLOAD_ATTEMPTS} denemede doğrulanamadı. Seed: ${seed}"
 
 ok "Program başarıyla yüklendi"
 printf 'Seed: %s\n' "$seed"
